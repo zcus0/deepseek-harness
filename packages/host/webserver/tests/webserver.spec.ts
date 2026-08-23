@@ -28,16 +28,24 @@ afterEach(async () => {
 })
 
 /** Write a cordis.yml with one webserver row, then boot it through the real Loader. */
-async function loadComposition(port = 0): Promise<Context> {
+async function loadComposition(port = 0, auth?: { username: string; password: string }): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-webserver-loader-'))
   const configPath = join(root, 'cordis.yml')
-  await writeFile(configPath, [
+  const lines = [
     "- name: '@deepseek-ai/dsh-host-webserver'",
     '  config:',
     "    host: '127.0.0.1'",
     `    port: ${String(port)}`,
-    '',
-  ].join('\n'))
+  ]
+  if (auth !== undefined) {
+    lines.push(
+      '    auth:',
+      `      username: ${JSON.stringify(auth.username)}`,
+      `      password: ${JSON.stringify(auth.password)}`,
+    )
+  }
+  lines.push('')
+  await writeFile(configPath, lines.join('\n'))
 
   context = new Context()
   context.baseUrl = pathToFileURL(root).href + '/'
@@ -270,5 +278,81 @@ describe('real Loader composition', () => {
       if (root !== undefined) await rm(root, { recursive: true, force: true })
       root = firstRoot
     }
+  })
+
+  describe('basic auth gate', () => {
+    /** One raw HTTP request carrying an explicit Authorization header value. */
+    async function authorizedRequest(port: number, path: string, authorization?: string): Promise<{ status: number; body: string }> {
+      const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
+        ...authorization !== undefined ? { headers: { authorization } } : {},
+      })
+      return { status: response.status, body: await response.text() }
+    }
+
+    /** Open one raw upgrade exchange and return the status line of the first response bytes. */
+    async function rawUpgrade(port: number, path: string, authorization?: string): Promise<string> {
+      const socket = connect(port, '127.0.0.1')
+      await once(socket, 'connect')
+      const response = once(socket, 'data')
+      socket.write([
+        `GET ${path} HTTP/1.1`,
+        `Host: 127.0.0.1:${String(port)}`,
+        ...(authorization !== undefined ? [`Authorization: ${authorization}`] : []),
+        'Connection: Upgrade',
+        'Upgrade: dsh-test',
+        '',
+        '',
+      ].join('\r\n'))
+      const [data] = await response as [Buffer]
+      socket.destroy()
+      return String(data)
+    }
+
+    it('challenges unauthenticated requests and accepts matching credentials', { timeout: 60_000 }, async () => {
+      const loaded = await loadComposition(0, { username: 'user', password: 's3cret' })
+      const server = loaded.webServer
+      server.register({ kind: 'exact', path: '/probe', handler: (_req, res) => { res.writeHead(200); res.end('EXACT') } })
+      const port = server.port
+      const good = `Basic ${Buffer.from('user:s3cret').toString('base64')}`
+
+      // No header and non-Basic schemes get the Basic challenge.
+      const denied = await authorizedRequest(port, '/probe')
+      expect(denied.status).toBe(401)
+      expect(denied.body).toBe('')
+      const challenge = await fetch(`http://127.0.0.1:${String(port)}/probe`)
+      expect(challenge.headers.get('www-authenticate')).toContain('Basic realm=')
+      expect(await authorizedRequest(port, '/probe', 'Bearer whatever')).toMatchObject({ status: 401 })
+
+      // A malformed credential payload (no colon separator) is a denial, not an error.
+      expect(await authorizedRequest(port, '/probe', `Basic ${Buffer.from('nocolon').toString('base64')}`))
+        .toMatchObject({ status: 401 })
+
+      // Wrong username and wrong password both stay denied (timing-safe equality on each field).
+      expect(await authorizedRequest(port, '/probe', `Basic ${Buffer.from('other:s3cret').toString('base64')}`))
+        .toMatchObject({ status: 401 })
+      expect(await authorizedRequest(port, '/probe', `Basic ${Buffer.from('user:nope').toString('base64')}`))
+        .toMatchObject({ status: 401 })
+
+      // The matching pair reaches the route handler untouched.
+      expect(await authorizedRequest(port, '/probe', good)).toMatchObject({ status: 200, body: 'EXACT' })
+
+      // Upgrade routes sit behind the same gate: denied without credentials,
+      // protocol negotiation proceeds with them.
+      server.registerUpgrade({
+        path: '/events',
+        handler: (_req, socket) => {
+          socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: dsh-test\r\n\r\n')
+        },
+      })
+      expect(await rawUpgrade(port, '/events')).toContain('401 Unauthorized')
+      expect(await rawUpgrade(port, '/events', good)).toContain('101 Switching Protocols')
+
+      await loaded.fiber.dispose()
+      context = undefined
+    })
+
+    it('fails loud at activation when only one credential field is set', { timeout: 60_000 }, async () => {
+      await expect(loadComposition(0, { username: 'user', password: '' })).rejects.toThrow(/both username and password/)
+    })
   })
 })

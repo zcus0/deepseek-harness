@@ -31,7 +31,7 @@ async function harness(): Promise<{
 }
 
 describe('PluginInventoryGateway', () => {
-  it('publishes one direct list method under the pluginInventory namespace', async () => {
+  it('publishes direct list and setEnabled methods under the pluginInventory namespace', async () => {
     const { inventory } = await harness()
     expect(inventory.typertRemote).toMatchObject({
       serviceKey: 'pluginInventory',
@@ -39,6 +39,7 @@ describe('PluginInventoryGateway', () => {
     })
     expect(remoteMethods(inventory)).toEqual([
       { method: 'list', invocation: { kind: 'direct' } },
+      { method: 'setEnabled', invocation: { kind: 'direct' } },
     ])
   })
 
@@ -85,5 +86,27 @@ describe('PluginInventoryGateway', () => {
 
     await ctx.loader.remove(pendingId)
     expect(inventory.list().entries.some(entry => entry.entryId === pendingId)).toBe(false)
+  })
+
+  it('setEnabled flips a live entry through the Loader', async () => {
+    const { ctx, inventory } = await harness()
+    const createdId = await ctx.loader.create({ name: 'cordis:active' })
+    // The Remote takes the branded id the UI reads from `list()`, not a raw string.
+    const entryId = inventory.list().entries.find(entry => entry.entryId === createdId)!.entryId
+    await inventory.setEnabled(entryId, false)
+    expect(inventory.list().entries.find(entry => entry.entryId === entryId)).toMatchObject({
+      enabled: false,
+    })
+    await inventory.setEnabled(entryId, true)
+    expect(inventory.list().entries.find(entry => entry.entryId === entryId)).toMatchObject({
+      enabled: true,
+    })
+  })
+
+  it('setEnabled rejects unknown and group entries loudly', async () => {
+    const { ctx, inventory } = await harness()
+    await expect(inventory.setEnabled('missing' as never, false)).rejects.toThrow('no plugin entry')
+    const groupId = await ctx.loader.create({ name: 'cordis:active', group: true })
+    await expect(inventory.setEnabled(groupId as never, false)).rejects.toThrow('is a group')
   })
 })

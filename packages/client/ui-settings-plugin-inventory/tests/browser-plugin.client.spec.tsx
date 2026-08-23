@@ -31,8 +31,10 @@ async function bench() {
   new RemoteService(ctx)
   const list = vi.fn<() => Promise<ListResult>>()
     .mockResolvedValue({ ok: true, value: EMPTY })
-  ctx.provide('remote.pluginInventory', { list })
-  return { ctx, slots: ctx.get('slots') as SlotRegistry, locale, list }
+  const setEnabled = vi.fn<(entryId: string, enabled: boolean) => Promise<ListResult>>()
+    .mockResolvedValue({ ok: true, value: EMPTY })
+  ctx.provide('remote.pluginInventory', { list, setEnabled })
+  return { ctx, slots: ctx.get('slots') as SlotRegistry, locale, list, setEnabled }
 }
 
 function declare(slots: SlotRegistry): () => void {
@@ -64,6 +66,13 @@ describe('ui-settings-plugin-inventory browser plugin', () => {
     expect(b.list).toHaveBeenCalledOnce()
     b.list.mockResolvedValueOnce({ ok: false, error: { code: 'REMOTE_ERROR', message: 'unavailable' } })
     await expect(injected.list()).rejects.toThrow('pluginInventory.list failed: REMOTE_ERROR: unavailable')
+    // The injected setEnabled takes the branded entry id shape from `list()`;
+    // the mock Remote is untyped, so cast the string literal through.
+    await expect(injected.setEnabled('entry-1' as never, false)).resolves.toBeUndefined()
+    expect(b.setEnabled).toHaveBeenCalledWith('entry-1', false)
+    b.setEnabled.mockResolvedValueOnce({ ok: false, error: { code: 'REMOTE_ERROR', message: 'no entry' } })
+    await expect(injected.setEnabled('entry-1' as never, false))
+      .rejects.toThrow('pluginInventory.setEnabled failed: REMOTE_ERROR: no entry')
     await b.ctx.fiber.dispose()
   })
 

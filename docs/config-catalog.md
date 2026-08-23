@@ -413,6 +413,16 @@ export interface ConnectionConfig {
    * that is not a bare, canonical authority fails the plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Serve the privileged configuration plane (`settings.*`, `credentials.*`,
+   * preset authoring, host dialogs, `llm.discoverModels`) to the configured
+   * trusted authorities too, not only loopback. The fence exists because
+   * `trustedHosts` is not authentication; enable this only when a real
+   * authentication layer fronts the server (for example the webserver's
+   * `auth` gate), otherwise any browser on those networks gains the
+   * configuration plane. Default: `false`.
+   */
+  allowRemotePrivilegedRpc?: boolean
   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
   maxRequestBodyBytes?: number
 }
@@ -860,16 +870,26 @@ Source: [`packages/host/frontend-static/src/index.ts:28`](../packages/host/front
 ## `@deepseek-ai/dsh-host-webserver`
 
 ```ts config-catalog
-/** Gateway config: the listen address. */
+/** Gateway config: the listen address and optional HTTP Basic authentication. */
 export interface Config {
   /** Listen host; the two supported values are loopback and all-interfaces. */
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /** Require these Basic credentials on every request and upgrade; absent or empty = no auth gate. */
+  auth?: WebServerAuthConfig
+}
+
+/** HTTP Basic credential pair accepted from every request when fully configured. */
+export interface WebServerAuthConfig {
+  /** Basic-auth username; set together with {@link WebServerAuthConfig.password} to enable the gate. */
+  username?: string
+  /** Basic-auth password; set together with {@link WebServerAuthConfig.username} to enable the gate. */
+  password?: string
 }
 ```
 
-Source: [`packages/host/webserver/src/index.ts:59`](../packages/host/webserver/src/index.ts)
+Source: [`packages/host/webserver/src/index.ts:68`](../packages/host/webserver/src/index.ts)
 
 <a id="deepseek-aidsh-invariants"></a>
 
@@ -3112,6 +3132,26 @@ export interface Config {
 
 Source: [`packages/web/web-fetch-http/src/index.ts:34`](../packages/web/web-fetch-http/src/index.ts)
 
+<a id="deepseek-aidsh-web-search-brave"></a>
+
+## `@deepseek-ai/dsh-web-search-brave`
+
+Requires: `web`
+
+```ts config-catalog
+/** Plugin config (all optional — `apply` fills env-var and constant defaults). */
+export interface Config {
+  /** Brave Search subscription token. Falls back to `$BRAVE_SEARCH_API_KEY`. Empty → provider unavailable. */
+  apiKey?: string
+  /** Endpoint base; `/res/v1/web/search` is appended. Defaults to the public API. */
+  baseURL?: string
+  /** Default result count when a request carries no `maxResults`. Defaults to 8. */
+  count?: number
+}
+```
+
+Source: [`packages/web/web-search-brave/src/index.ts:36`](../packages/web/web-search-brave/src/index.ts)
+
 <a id="deepseek-aidsh-web-search-deepseek"></a>
 
 ## `@deepseek-ai/dsh-web-search-deepseek`
@@ -3163,6 +3203,26 @@ export interface Config {
 ```
 
 Source: [`packages/web/web-search-exa/src/index.ts:38`](../packages/web/web-search-exa/src/index.ts)
+
+<a id="deepseek-aidsh-web-search-firecrawl"></a>
+
+## `@deepseek-ai/dsh-web-search-firecrawl`
+
+Requires: `web`
+
+```ts config-catalog
+/** Plugin config (all optional — `apply` fills env-var and constant defaults). */
+export interface Config {
+  /** Firecrawl API key. Falls back to `$FIRECRAWL_API_KEY`. Empty → cloud unavailable; self-hosted still usable. */
+  apiKey?: string
+  /** Endpoint base; `/v1/search` is appended. Defaults to the public cloud API. */
+  baseURL?: string
+  /** Default result count when a request carries no `maxResults`. Defaults to 8. */
+  limit?: number
+}
+```
+
+Source: [`packages/web/web-search-firecrawl/src/index.ts:36`](../packages/web/web-search-firecrawl/src/index.ts)
 
 <a id="deepseek-aidsh-web-search-perplexity"></a>
 

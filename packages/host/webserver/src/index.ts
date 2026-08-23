@@ -10,6 +10,7 @@
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse, Server } from 'node:http'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -55,12 +56,22 @@ export interface WebUpgradeRoute {
   handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void>
 }
 
-/** Gateway config: the listen address. */
+/** HTTP Basic credential pair accepted from every request when fully configured. */
+export interface WebServerAuthConfig {
+  /** Basic-auth username; set together with {@link WebServerAuthConfig.password} to enable the gate. */
+  username?: string
+  /** Basic-auth password; set together with {@link WebServerAuthConfig.username} to enable the gate. */
+  password?: string
+}
+
+/** Gateway config: the listen address and optional HTTP Basic authentication. */
 export interface Config {
   /** Listen host; the two supported values are loopback and all-interfaces. */
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /** Require these Basic credentials on every request and upgrade; absent or empty = no auth gate. */
+  auth?: WebServerAuthConfig
 }
 
 /**
@@ -74,6 +85,13 @@ export class WebServer extends Service {
   static Config: z<Config> = z.object({
     host: z.union([z.const('127.0.0.1'), z.const('0.0.0.0')]).required(),
     port: z.natural().max(65535).required(),
+    // Credential fields stay optional here (nested required fields are also
+    // validated when the parent is absent); [Service.init] resolves and
+    // validates the pair.
+    auth: z.object({
+      username: z.string(),
+      password: z.string(),
+    }),
   })
 
   private readonly exact = new Map<string, WebRoute>()
@@ -81,6 +99,8 @@ export class WebServer extends Service {
   private readonly upgrades = new Map<string, WebUpgradeRoute>()
   private readonly upgradedSockets = new Set<Duplex>()
   private readonly indexTaps: ((html: string) => string)[] = []
+  /** The resolved credential gate: undefined unless BOTH config fields are non-empty. */
+  private basicAuth: { readonly username: string; readonly password: string } | undefined
   private fallback: WebRoute['handler'] | undefined
   private server!: Server
   private listenedPort!: number
@@ -161,7 +181,24 @@ export class WebServer extends Service {
 
   /** Listen; resolves once the socket is bound (rejection = FAILED fiber). */
   async [Service.init](): Promise<void> {
+    // The schema leaves both credential fields optional (nested required fields
+    // would also be validated when the parent is absent), so the gate resolves
+    // here: absent on no configuration, and a half-specified or empty-field
+    // pair fails loud at activation instead of silently disabling one field.
+    const username = this.config.auth?.username
+    const password = this.config.auth?.password
+    if ((username !== undefined && username.length > 0) || (password !== undefined && password.length > 0)) {
+      if (username === undefined || username.length === 0 || password === undefined || password.length === 0) {
+        throw new Error('webserver: auth requires both username and password')
+      }
+      this.basicAuth = { username, password }
+    }
     const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (!this.authorize(req)) {
+        res.writeHead(401, { 'www-authenticate': 'Basic realm="dsh", charset="UTF-8"' })
+        res.end()
+        return
+      }
       /* v8 ignore next -- `?? '/'` arm: node:http always sets url on server
       requests; the field is only optional on the client-side IncomingMessage type */
       const rawPath = new URL(req.url ?? '/', 'http://x').pathname
@@ -203,6 +240,13 @@ export class WebServer extends Service {
         socket.off('error', onError)
         this.upgradedSockets.delete(socket)
       })
+      if (!this.authorize(req)) {
+        // A raw HTTP/1.1 401 lets browser upgrade attempts trigger the same
+        // Basic credentials prompt as page requests; the socket is not usable
+        // past this response either way.
+        socket.end('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="dsh", charset="UTF-8"\r\nConnection: close\r\n\r\n')
+        return
+      }
       let route: WebUpgradeRoute | undefined
       try {
         /* v8 ignore next -- node:http always sets url on server requests. */
@@ -265,6 +309,19 @@ export class WebServer extends Service {
     return best
   }
 
+  /** True when no auth gate is configured or the request carries matching Basic credentials. */
+  private authorize(req: IncomingMessage): boolean {
+    const auth = this.basicAuth
+    if (auth === undefined) return true
+    const header = req.headers.authorization
+    if (header === undefined || !header.startsWith('Basic ')) return false
+    const decoded = Buffer.from(header.slice('Basic '.length), 'base64').toString('utf8')
+    const separator = decoded.indexOf(':')
+    if (separator < 0) return false
+    return digestEquals(decoded.slice(0, separator), auth.username)
+      && digestEquals(decoded.slice(separator + 1), auth.password)
+  }
+
   /**
    * Run an index.html body through the registered taps in registration order
    * — called by the fallback owner on every index response it renders.
@@ -301,3 +358,17 @@ export class WebServer extends Service {
 }
 
 export default WebServer
+
+/**
+ * Constant-time string equality: both sides hash to fixed-length digests, so
+ * comparison cost never leaks how many leading credential bytes matched.
+ * @param actual - the credential from the request.
+ * @param expected - the configured credential.
+ * @returns true when the two strings are equal.
+ */
+function digestEquals(actual: string, expected: string): boolean {
+  return timingSafeEqual(
+    createHash('sha256').update(actual).digest(),
+    createHash('sha256').update(expected).digest(),
+  )
+}

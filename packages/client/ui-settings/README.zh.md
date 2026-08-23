@@ -15,5 +15,5 @@
 
 ## 已知限制与暂缓事项
 
-- **远程浏览器没有持久化设置**：设置 RPC 仅限 loopback，因此在非 loopback 浏览器中绑定的 scope 以 `unavailable` 起步且从不跨线路，它支撑的每一行在那里都是无效的。
+- **传输保护不在客户端**：每个绑定的 scope 都以 Host 文档为准并会跨线路访问，无论连接是否来自 loopback；保护这一访问是 webserver 的 `auth` 门禁（`@deepseek-ai/dsh-host-webserver`）的职责，没有它时任何能触达服务器的网络对端都可以读写设置。
 - **每次写入仅一个字段**：`set` 只发送单个 `set` op，因此需要同时改动两个字段的行没有事务可用，会发布两个 revision。

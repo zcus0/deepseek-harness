@@ -15,5 +15,5 @@ None; this package neither assembles nor sends a provider request.
 
 ## Known Limitations and Deferred Work
 
-- **Remote browsers get no durable settings** — the settings RPCs are loopback-only, so a scope bound in a non-loopback browser starts `unavailable` and never crosses the wire; every row it backs is inert there.
+- **Transport protection is not client-side** — every bound scope is host-backed and crosses the wire on any connection, loopback or not; guarding that access is the webserver's `auth` gate (`@deepseek-ai/dsh-host-webserver`), without which any network peer reaching the server can read and write settings.
 - **One field per write** — `set` sends a single `set` op, so a row that must move two fields together has no transaction and publishes two revisions.

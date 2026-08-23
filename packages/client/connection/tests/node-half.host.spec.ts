@@ -75,7 +75,7 @@ function fakeResponse(): { response: ServerResponse; state: { status?: number; b
   return { response, state }
 }
 
-async function mounted(config?: { trustedHosts?: string[] }): Promise<{
+async function mounted(config?: { trustedHosts?: string[]; allowRemotePrivilegedRpc?: boolean }): Promise<{
   routes: WebRoute[]
   upgrades: WebUpgradeRoute[]
   dispose: () => Promise<void>
@@ -176,6 +176,7 @@ describe('connection node half', () => {
     // passed), but each privileged method stays loopback-only and 403s.
     for (const method of [
       'host.pickDirectory', 'host.openPath',
+      'pluginInventory.setEnabled',
       'settings.describe', 'settings.openDocument', 'settings.update', 'settings.replace', 'settings.mutate',
       'credentials.describe', 'credentials.set', 'credentials.unset',
       'llm.discoverModels',
@@ -195,6 +196,27 @@ describe('connection node half', () => {
     const read = fakeResponse()
     await routes[0]!.handler(fakeRequest({ host: 'harness.example' }), read.response)
     expect(read.state.status).not.toBe(403)
+    await dispose()
+  })
+
+  it('extends the privileged plane to declared authorities only behind allowRemotePrivilegedRpc', async () => {
+    const { routes, dispose } = await mounted({
+      trustedHosts: ['harness.example'],
+      allowRemotePrivilegedRpc: true,
+    })
+    // The same declared authority now crosses the privileged fence (the
+    // carrier-level 404 from the empty proxy proves the fence passed).
+    for (const method of ['settings.describe', 'settings.mutate', 'credentials.describe']) {
+      const allowed = fakeResponse()
+      await routes[0]!.handler(fakeRequest({ host: 'harness.example' }, `${API_PATH}/${method}`), allowed.response)
+      expect(allowed.state.status).toBe(404)
+    }
+    // An authority outside the declaration never gains the plane, flag or not.
+    const stranger = fakeResponse()
+    await routes[0]!.handler(fakeRequest({
+      host: 'other.example', origin: 'http://other.example', 'sec-fetch-site': 'same-origin',
+    }, `${API_PATH}/settings.describe`), stranger.response)
+    expect(stranger.state.status).toBe(403)
     await dispose()
   })
 
@@ -473,6 +495,7 @@ describe('connection node half over a real HTTP server', () => {
         'settings.describe', 'settings.openDocument', 'settings.update', 'settings.replace', 'settings.mutate',
         'credentials.describe', 'credentials.set', 'credentials.unset',
         'host.pickDirectory', 'host.openPath',
+        'pluginInventory.setEnabled',
         // Carries a draft credential and turns the host into a fetcher for a
         // URL the caller picked: an anonymous LAN caller must not reach it.
         'llm.discoverModels',

@@ -1,8 +1,9 @@
-/** Read-only projection of the current Cordis Loader plugin entries. */
+/** Projection of the current Cordis Loader plugin entries with enable/disable control. */
 
 import type { Context, FiberState } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
+import { setEntryDisabledInHomePatch } from './patch-persist.ts'
 // Typert-generated ./typert and ./remote artifacts import Zod at runtime.
 import type {} from 'zod'
 import type {
@@ -39,7 +40,7 @@ const FIBER_PHASE = {
   [FIBER_STATE.UNLOADING]: 'unloading',
 } as const satisfies Record<FiberState, PluginFiberPhase>
 
-/** Remote-only service exposing the Loader's current non-group entry state. */
+/** Remote service exposing the Loader's current non-group entry state and its enablement. */
 export class PluginInventoryGateway extends TypertRemoteService {
   static inject = ['loader']
 
@@ -66,6 +67,33 @@ export class PluginInventoryGateway extends TypertRemoteService {
       })
     }
     return { entries }
+  }
+
+  /**
+   * Enable or disable one non-group entry in the running tree, then persist the
+   * toggle as an id-targeted row in the home patch layer (`$DSH_HOME/cordis.patch.yml`)
+   * so it survives restarts. The Loader applies `disabled` by disposing a live
+   * entry's fiber, or starting a disabled one; the persisted row merges onto
+   * the composed entry by id on every later boot.
+   * @param entryId - the Loader-tree entry id from {@link list}.
+   * @param enabled - the requested enablement.
+   */
+  @Remote('setEnabled')
+  async setEnabled(entryId: PluginEntryId, enabled: boolean): Promise<void> {
+    const id = String(entryId)
+    const entry = [...this.ctx.loader.entries()].find(candidate => candidate.id === id)
+    if (entry === undefined) {
+      throw new Error(`pluginInventory: no plugin entry ${JSON.stringify(id)}`)
+    }
+    if (entry.options.group) {
+      // `list()` excludes groups, so this id never came from this Remote; a
+      // group toggle would silently flip a whole subtree.
+      throw new Error(`pluginInventory: entry ${JSON.stringify(id)} is a group`)
+    }
+    await this.ctx.loader.update(id, { disabled: !enabled })
+    // Persist after the tree accepted the change: a failed write must not
+    // leave disk claiming a state the process refused to apply.
+    await setEntryDisabledInHomePatch(id, !enabled)
   }
 }
 

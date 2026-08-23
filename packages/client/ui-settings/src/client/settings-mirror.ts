@@ -79,7 +79,8 @@ export class SettingsDescribeMirror implements SettingsDescribeFace {
 
   /**
    * @param api - settings wire face.
-   * @param persistence - remote browsers stay process-local because settings RPCs are loopback-only.
+   * @param persistence - `host` reads the Host document over the wire; `memory`
+   *   keeps the mirror terminally unavailable without crossing the wire.
    */
   constructor(
     private readonly api: SettingsFace,

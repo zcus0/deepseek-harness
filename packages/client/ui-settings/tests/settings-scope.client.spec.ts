@@ -452,7 +452,7 @@ describe('SettingsScopeBinder.bind', () => {
     expect(theme.getSnapshot()).toMatchObject({ revision: 1 })
   })
 
-  it('binds a remote browser in memory mode without starting a settings read', async () => {
+  it('binds every browser host-backed; a never-read mirror holds the scope loading without starting a read', async () => {
     const describeCall = vi.fn()
     const wire = { settings: { describe: describeCall } }
     const mirror = new SettingsDescribeMirror(wire as never, 'memory')
@@ -468,7 +468,10 @@ describe('SettingsScopeBinder.bind', () => {
       },
     })
     await fiber.await()
-    expect(scope.getSnapshot()).toMatchObject({ status: 'unavailable', mode: 'memory', writable: false })
+    // Transport access is the webserver auth gate's concern, so even a
+    // non-loopback connection derives from the Host document; the scope waits
+    // on the shared mirror (whose first read belongs to its owning plugin).
+    expect(scope.getSnapshot()).toMatchObject({ status: 'loading', mode: 'host' })
     await fiber.dispose()
     expect(describeCall).not.toHaveBeenCalled()
   })

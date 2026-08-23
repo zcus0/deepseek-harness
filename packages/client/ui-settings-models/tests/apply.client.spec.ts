@@ -153,7 +153,7 @@ describe('ui-settings-models apply', () => {
     expect(() => b.locale.register('settings.models', 'en', {})).not.toThrow()
   })
 
-  it('keeps remote-browser acknowledgement in process memory', async () => {
+  it('holds the welcome step loading while the Host document stays unreachable', async () => {
     const b = await bench(false)
     declare(b.slots)
     await b.ctx.plugin({ inject: [...inject], apply }).await()
@@ -163,9 +163,12 @@ describe('ui-settings-models apply', () => {
       entry.inject as unknown as () => import('../src/client/WelcomeNotice.tsx').WelcomeNoticeInjected
     )()
 
+    // The fixture wires no settings face, so the host-backed scope never
+    // settles past its first read; the notice keeps waiting instead of
+    // inventing a local acknowledgement.
     await injected.controller.load()
     expect(injected.controller.store.getSnapshot()).toEqual({
-      status: 'ready', acknowledged: false, error: null,
+      status: 'loading', acknowledged: false, error: null,
     })
   })
 })

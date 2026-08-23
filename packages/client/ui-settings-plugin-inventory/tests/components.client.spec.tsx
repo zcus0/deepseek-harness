@@ -13,10 +13,11 @@ afterEach(cleanup)
 type Snapshot = Awaited<ReturnType<PluginInventorySettingsTabInjected['list']>>
 const t = ((key: PluginInventoryLocaleKey): string => en[key]) as PluginInventorySettingsTabProps['t']
 
-function props(list: PluginInventorySettingsTabInjected['list']): PluginInventorySettingsTabProps {
+function props(list: PluginInventorySettingsTabInjected['list'], setEnabled?: PluginInventorySettingsTabInjected['setEnabled']): PluginInventorySettingsTabProps {
   return {
     t,
     list,
+    setEnabled,
   } as PluginInventorySettingsTabProps
 }
 
@@ -123,5 +124,43 @@ describe('PluginInventorySettingsTab', () => {
     const pendingFailure = render(<PluginInventorySettingsTab {...props(() => deferredFailure.promise)} />)
     pendingFailure.unmount()
     await act(async () => { deferredFailure.reject(new Error('late failure')) })
+  })
+  it('toggles a plugin through the Host Remote and settles the row locally', async () => {
+    const setEnabled = vi.fn<PluginInventorySettingsTabInjected['setEnabled']>().mockResolvedValue(undefined)
+    const { container } = render(<PluginInventorySettingsTab {...props(async () => SNAPSHOT, setEnabled)} />)
+
+    const toggle = await screen.findByRole('switch', { name: `${en.disable} hmr` })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    await act(async () => { fireEvent.click(toggle) })
+    expect(setEnabled).toHaveBeenCalledWith('8a1b2c3d', false)
+    // The row flips without another Remote read: tag reverts, status dot gone.
+    await screen.findByRole('switch', { name: `${en.enable} hmr` })
+    expect(screen.getAllByText(en.disabledTag)).toHaveLength(2)
+    expect(container.querySelectorAll('[data-phase]').length).toBe(SNAPSHOT.entries.length - 2)
+    expect(setEnabled).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the row unchanged when the Host Remote rejects the toggle', async () => {
+    const setEnabled = vi.fn<PluginInventorySettingsTabInjected['setEnabled']>().mockRejectedValue(new Error('persist denied'))
+    render(<PluginInventorySettingsTab {...props(async () => SNAPSHOT, setEnabled)} />)
+
+    const toggle = await screen.findByRole('switch', { name: `${en.disable} hmr` })
+    await act(async () => { fireEvent.click(toggle) })
+    // Failure reverts the transitional tag and re-enables the control.
+    await screen.findByRole('switch', { name: `${en.disable} hmr` })
+    expect(screen.getAllByText(en.enabledTag)).toHaveLength(6)
+    expect(setEnabled).toHaveBeenCalledOnce()
+  })
+
+  it('ignores a second toggle while the first Remote call is in flight', async () => {
+    const deferred = Promise.withResolvers<undefined>()
+    const setEnabled = vi.fn(() => deferred.promise) as PluginInventorySettingsTabInjected['setEnabled']
+    render(<PluginInventorySettingsTab {...props(async () => SNAPSHOT, setEnabled)} />)
+
+    const toggle = await screen.findByRole('switch', { name: `${en.disable} hmr` })
+    await act(async () => { fireEvent.click(toggle) })
+    await act(async () => { fireEvent.click(screen.getByRole('switch', { name: `${en.disable} hmr` })) })
+    expect(setEnabled).toHaveBeenCalledOnce()
+    await act(async () => { deferred.resolve(undefined) })
   })
 })
