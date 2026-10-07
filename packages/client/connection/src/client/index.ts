@@ -103,7 +103,9 @@ export function apply(ctx: Context): void {
   }
   const handle: ConnectionHandle = {
     api,
-    isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
+    isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname) ||
+                // Trusted hosts (dsh.zcus.tech, direct IP with Host header) should also enable loopback for settings
+                pageLocation.hostname === 'dsh.zcus.tech' || pageLocation.hostname.includes('.zcus.tech'),
     hostDescription: {
       getSnapshot: () => description,
       subscribe: (listener) => {
